@@ -1,3 +1,4 @@
 @_exported import Alamofire
+@_exported import Combine
 
-public typealias EmptyResponse = Alamofire.Empty
+public typealias EmptyResponseData = Alamofire.Empty // Avoid ambiguous naming

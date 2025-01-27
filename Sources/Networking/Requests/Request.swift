@@ -2,27 +2,16 @@
 //  Request.swift
 //  Networking
 //
-//  Created by Sereivoan Yong on 1/27/25.
+//  Created by Sereivoan Yong on 1/28/25.
 //
 
 import Foundation
 import Alamofire
 
-public enum JSONRepresentation {
-
-  case encoding(any Encodable)
-  case serialization(Any)
-}
-
-public protocol BodyContaining {
-
-  var body: JSONRepresentation? { get }
-}
-
-public protocol Request<Response> {
+public protocol Request<ResponseData> {
 
   /// The type of `data` in json reponse
-  associatedtype Response: Decodable
+  associatedtype ResponseData: Decodable
 
   var queryParameters: JSONRepresentation? { get }
 

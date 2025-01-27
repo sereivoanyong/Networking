@@ -2,32 +2,109 @@
 //  Client.swift
 //  Networking
 //
-//  Created by Sereivoan Yong on 1/27/25.
+//  Created by Sereivoan Yong on 1/28/25.
 //
 
 import Foundation
 import Alamofire
+import Combine
+
+// any Request<T> will cause crash on iOS 15
 
 open class Client<Variables: Networking.Variables> {
 
-  open var dateFormatter: DateFormatter? {
+  public let session: Session
+  
+  open var dateFormatter: DateFormatter?
+
+  public init() {
+    var eventMonitors: [EventMonitor] = []
+#if DEBUG
+    eventMonitors.append(AlamofireLogger())
+#endif
+    session = Session(
+      configuration: Self.makeSessionConfiguration(),
+      eventMonitors: eventMonitors
+    )
+  }
+
+  // MARK: Requests
+
+  @discardableResult
+  public func request<R: Request<Response.T>, Response: ResponseProtocol>(_ request: R, completion: @escaping (Result<(Response.T, Response), NetworkingError>) -> Void) -> any Cancellable {
+    let urlRequest = makeURLRequest(request)
+    let decoder = makeDecoder(request)
+    let dataRequest = session
+      .request(urlRequest)
+      .validate()
+      .responseData(queue: .main) { [unowned self] response in
+        process(response, decoder: decoder, completion: completion)
+      }
+    return dataRequest
+  }
+
+  @discardableResult
+  public func request<R: UploadRequest<Response.T>, Response: ResponseProtocol>(_ request: R, completion: @escaping (Result<(Response.T, Response), NetworkingError>) -> Void) -> any Cancellable {
+    let urlRequest = makeURLRequest(request)
+    let decoder = makeDecoder(request)
+    let uploadRequest = session
+      .upload(
+        multipartFormData: request.makeFormData(),
+        with: urlRequest
+      )
+      .validate()
+      .responseData(queue: .main) { [unowned self] response in
+        process(response, decoder: decoder, completion: completion)
+      }
+    return uploadRequest
+  }
+
+  private func process<Response: ResponseProtocol>(_ dataResponse: AFDataResponse<Data>, decoder: JSONDecoder, completion: @escaping (Result<(Response.T, Response), NetworkingError>) -> Void) {
+    switch dataResponse.result {
+    case .success(let data):
+      let result = decodeResponseResult(Response.self, from: data, using: decoder)
+      completion(result)
+
+    case .failure(let error):
+      if let data = dataResponse.data {
+        if let urlResponse = dataResponse.response, 500..<600 ~= urlResponse.statusCode {
+          if case .success(let serverError) = decodeServerError(from: data, using: decoder) {
+            completion(.failure(.server(serverError)))
+            return
+          }
+        }
+        if case .success(let responseError) = decodeResponseError(Response.self, from: data, using: decoder) {
+          completion(.failure(.response(responseError)))
+          return
+        }
+      }
+      completion(.failure(.flattened(error)))
+    }
+  }
+
+  open func decodeResponseResult<Response: ResponseProtocol>(_ responseType: Response.Type, from data: Data, using decoder: JSONDecoder) -> Result<(Response.T, Response), NetworkingError> {
+    do {
+      let response = try decoder.decode(responseType, from: data)
+      return response.result
+    } catch {
+      return .failure(.decoding(data, error as! DecodingError))
+    }
+  }
+
+  open func decodeServerError(from data: Data, using decoder: JSONDecoder) -> Result<any LocalizedError, DecodingError>? {
     return nil
   }
 
-  public let session: Session = {
-    let eventMonitors: [EventMonitor]
-#if DEBUG
-    eventMonitors = [AlamofireLogger()]
-#else
-    eventMonitors = []
-#endif
-    return Session(
-      configuration: Client.makeSessionConfiguration(),
-      eventMonitors: eventMonitors
-    )
-  }()
-
-  public init() {
+  open func decodeResponseError<Response: ResponseProtocol>(_ responseType: Response.Type, from data: Data, using decoder: JSONDecoder) -> Result<Response.ResponseError, DecodingError>? {
+    do {
+      let response = try decoder.decode(responseType, from: data)
+      if let error = response.error {
+        return .success(error)
+      }
+      return nil
+    } catch {
+      return .failure(error as! DecodingError)
+    }
   }
 
   // MARK: Factory Methods
@@ -40,24 +117,7 @@ open class Client<Variables: Networking.Variables> {
     return configuration
   }
 
-  open func makeEncoder<T>(_ request: any Networking.Request<T>) -> JSONEncoder {
-    let encoder = JSONEncoder()
-    if let dateFormatter {
-      encoder.dateEncodingStrategy = .formatted(dateFormatter)
-    }
-    return encoder
-  }
-
-  open func makeDecoder<T>(_ request: any Networking.Request<T>) -> JSONDecoder {
-    let decoder = JSONDecoder()
-    if let dateFormatter {
-      decoder.dateDecodingStrategy = .formatted(dateFormatter) // 2024-03-11T07:33:47.564163451
-    }
-    decoder.userInfo = request.decodingUserInfo ?? [:]
-    return decoder
-  }
-
-  open func makeURLRequest<T>(_ request: any Networking.Request<T>) -> URLRequest {
+  public func makeURLRequest<R: Request>(_ request: R) -> URLRequest {
     let baseURL = request.overrideBaseURL ?? Variables.baseURL!
     let url = baseURL.appendingPathComponent(request.path)
     var urlRequest = URLRequest(url: url)
@@ -103,7 +163,7 @@ open class Client<Variables: Networking.Variables> {
     }
 
     // Body
-    if let bodyRequest = request as? BodyContaining, let body = bodyRequest.body {
+    if let bodyRequest = request as? _BodyContaining, let body = bodyRequest.body {
       do {
         switch body {
         case .encoding(let encodable):
@@ -117,5 +177,22 @@ open class Client<Variables: Networking.Variables> {
       }
     }
     return urlRequest
+  }
+
+  open func makeEncoder<R: Request>(_ request: R) -> JSONEncoder {
+    let encoder = JSONEncoder()
+    if let dateFormatter {
+      encoder.dateEncodingStrategy = .formatted(dateFormatter)
+    }
+    return encoder
+  }
+
+  open func makeDecoder<R: Request>(_ request: R) -> JSONDecoder {
+    let decoder = JSONDecoder()
+    if let dateFormatter {
+      decoder.dateDecodingStrategy = .formatted(dateFormatter) // 2024-03-11T07:33:47.564163451
+    }
+    decoder.userInfo = request.decodingUserInfo ?? [:]
+    return decoder
   }
 }

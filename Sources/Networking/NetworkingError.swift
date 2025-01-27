@@ -2,7 +2,7 @@
 //  NetworkingError.swift
 //  Networking
 //
-//  Created by Sereivoan Yong on 1/27/25.
+//  Created by Sereivoan Yong on 1/28/25.
 //
 
 import Foundation
@@ -12,7 +12,8 @@ public enum NetworkingError: Error {
 
   case af(AFError)
   case url(URLError)
-  case response(any LocalizedError)
+  case server(any LocalizedError)
+  case response(any ResponseErrorProtocol)
   case decoding(Data, DecodingError)
   case unknown
 
@@ -99,6 +100,8 @@ extension NetworkingError: LocalizedError {
       return error.errorDescription
     case .url(let error):
       return error.localizedDescription
+    case .server(let error):
+      return error.errorDescription
     case .response(let error):
       return error.errorDescription
     case .decoding(_, let error):
@@ -118,6 +121,13 @@ extension NetworkingError: LocalizedError {
     case .unknown:
       return "An unknown error occured."
     }
+  }
+}
+
+extension Result where Failure == NetworkingError {
+
+  public static var nilOrZeroLengthFailure: Self {
+    return .failure(.af(.responseSerializationFailed(reason: .inputDataNilOrZeroLength)))
   }
 }
 
