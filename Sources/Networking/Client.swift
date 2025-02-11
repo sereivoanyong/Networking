@@ -33,7 +33,7 @@ open class Client<Variables: Networking.Variables> {
   @discardableResult
   public func request<R: Request<Response.T>, Response: ResponseProtocol>(_ request: R, completion: @escaping (Result<(Response.T, Response), NetworkingError>) -> Void) -> any Cancellable {
     let urlRequest = makeURLRequest(request)
-    let decoder = makeDecoder(request)
+    let decoder = makeResponseDecoder(for: request)
     let dataRequest = session
       .request(urlRequest)
       .validate()
@@ -46,7 +46,7 @@ open class Client<Variables: Networking.Variables> {
   @discardableResult
   public func request<R: UploadRequest<Response.T>, Response: ResponseProtocol>(_ request: R, completion: @escaping (Result<(Response.T, Response), NetworkingError>) -> Void) -> any Cancellable {
     let urlRequest = makeURLRequest(request)
-    let decoder = makeDecoder(request)
+    let decoder = makeResponseDecoder(for: request)
     let uploadRequest = session
       .upload(
         multipartFormData: request.makeFormData(),
@@ -107,6 +107,61 @@ open class Client<Variables: Networking.Variables> {
     }
   }
 
+  // MARK: Modifiers
+
+  open func setHeaders<R: Request>(from request: R, to urlRequest: inout URLRequest) {
+    var headers: HTTPHeaders = .default
+    headers.add(.contentType("application/json"))
+    if let requestHeaders = request.headers {
+      for (requestHeaderKey, requestHeaderValue) in requestHeaders {
+        headers[requestHeaderKey] = requestHeaderValue
+      }
+    }
+    if let accessToken = Variables.accessToken {
+      headers.add(.authorization(bearerToken: accessToken))
+    }
+    urlRequest.headers = headers
+  }
+
+  open func setQuery<R: Request>(from request: R, to urlRequest: inout URLRequest) {
+    guard let queryParameters = request.queryParameters else { return }
+    switch queryParameters {
+    case .encoding(let encodable):
+      do {
+        let encoder = URLEncodedFormParameterEncoder(destination: .queryString)
+        urlRequest = try encoder.encode(encodable, into: urlRequest)
+      } catch {
+        assertionFailure(error.localizedDescription)
+      }
+    case .serialization(let any):
+      if let dictionary = any as? [String: Any] {
+        do {
+          let encoding = URLEncoding(destination: .queryString)
+          urlRequest = try encoding.encode(urlRequest, with: dictionary)
+        } catch {
+          assertionFailure(error.localizedDescription)
+        }
+      } else {
+        assertionFailure("Invalid query serialization")
+      }
+    }
+  }
+
+  open func setBody<R: Request>(from request: R, to urlRequest: inout URLRequest) {
+    guard let bodyRequest = request as? _BodyContaining, let body = bodyRequest.body else { return }
+    do {
+      switch body {
+      case .encoding(let encodable):
+        let encoder = makeBodyEncoder(for: request)
+        urlRequest.httpBody = try encoder.encode(encodable)
+      case .serialization(let object):
+        urlRequest.httpBody = try JSONSerialization.data(withJSONObject: object, options: [])
+      }
+    } catch {
+      print(error)
+    }
+  }
+
   // MARK: Factory Methods
 
   open class func makeSessionConfiguration() -> URLSessionConfiguration {
@@ -117,69 +172,19 @@ open class Client<Variables: Networking.Variables> {
     return configuration
   }
 
-  public func makeURLRequest<R: Request>(_ request: R) -> URLRequest {
+  open func makeURLRequest<R: Request>(_ request: R) -> URLRequest {
     let baseURL = request.overrideBaseURL ?? Variables.baseURL!
     let url = baseURL.appendingPathComponent(request.path)
     var urlRequest = URLRequest(url: url)
     urlRequest.httpMethod = request.method.rawValue
-
-    // Headers
-    do {
-      var headers = HTTPHeaders.default
-      headers.add(.contentType("application/json"))
-      if let requestHeaders = request.headers {
-        for (requestHeaderKey, requestHeaderValue) in requestHeaders {
-          headers[requestHeaderKey] = requestHeaderValue
-        }
-      }
-      if let accessToken = Variables.accessToken {
-        headers.add(.authorization(bearerToken: accessToken))
-      }
-      urlRequest.headers = headers
-    }
-
-    // Query
-    if let queryParameters = request.queryParameters {
-      switch queryParameters {
-      case .encoding(let encodable):
-        do {
-          let encoder = URLEncodedFormParameterEncoder(destination: .queryString)
-          urlRequest = try encoder.encode(encodable, into: urlRequest)
-        } catch {
-          assertionFailure(error.localizedDescription)
-        }
-      case .serialization(let any):
-        if let dictionary = any as? [String: Any] {
-          do {
-            let encoding = URLEncoding(destination: .queryString)
-            urlRequest = try encoding.encode(urlRequest, with: dictionary)
-          } catch {
-            assertionFailure(error.localizedDescription)
-          }
-        } else {
-          assertionFailure("Invalid query serialization")
-        }
-      }
-    }
-
-    // Body
-    if let bodyRequest = request as? _BodyContaining, let body = bodyRequest.body {
-      do {
-        switch body {
-        case .encoding(let encodable):
-          let encoder = makeEncoder(request)
-          urlRequest.httpBody = try encoder.encode(encodable)
-        case .serialization(let object):
-          urlRequest.httpBody = try JSONSerialization.data(withJSONObject: object, options: [])
-        }
-      } catch {
-        print(error)
-      }
-    }
+    setHeaders(from: request, to: &urlRequest)
+    setQuery(from: request, to: &urlRequest)
+    setBody(from: request, to: &urlRequest)
     return urlRequest
   }
 
-  open func makeEncoder<R: Request>(_ request: R) -> JSONEncoder {
+  /// Used for body encoding to URL request
+  open func makeBodyEncoder<R: Request>(for request: R) -> JSONEncoder {
     let encoder = JSONEncoder()
     if let dateFormatter {
       encoder.dateEncodingStrategy = .formatted(dateFormatter)
@@ -187,7 +192,8 @@ open class Client<Variables: Networking.Variables> {
     return encoder
   }
 
-  open func makeDecoder<R: Request>(_ request: R) -> JSONDecoder {
+  /// Used for response decoding
+  open func makeResponseDecoder<R: Request>(for request: R) -> JSONDecoder {
     let decoder = JSONDecoder()
     if let dateFormatter {
       decoder.dateDecodingStrategy = .formatted(dateFormatter) // 2024-03-11T07:33:47.564163451
