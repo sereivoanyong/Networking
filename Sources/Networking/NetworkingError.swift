@@ -12,6 +12,7 @@ public enum NetworkingError: Error {
 
   case af(AFError)
   case url(URLError)
+  case statusCode(Int)
   case server(any LocalizedError)
   case response(any ResponseErrorProtocol)
   case decoding(Data, DecodingError)
@@ -50,7 +51,10 @@ public enum NetworkingError: Error {
       return .af(afError)
     case .requestRetryFailed:
       return .af(afError)
-    case .responseValidationFailed:
+    case .responseValidationFailed(let reason):
+      if case .unacceptableStatusCode(let code) = reason {
+        return .statusCode(code)
+      }
       return .af(afError)
     case .responseSerializationFailed(let reason):
       switch reason {
@@ -100,6 +104,8 @@ extension NetworkingError: LocalizedError {
       return error.errorDescription
     case .url(let error):
       return error.localizedDescription
+    case .statusCode(let statusCode):
+      return "\(statusCode) (\(HTTPURLResponse.localizedString(forStatusCode: statusCode)))"
     case .server(let error):
       return error.errorDescription
     case .response(let error):
